@@ -1,14 +1,18 @@
-# AMap-buildings-to-OSM
+# Buildings → OSM
 
-`amap2osm.py` is a single-file pipeline that, given a polygon (raw
-`lon,lat` vertices, a GeoJSON, or a Shapefile), will:
+`buildings2osm.py` takes a polygon (raw `lon,lat` vertices, a GeoJSON, or a
+Shapefile) and:
 
-1. Crawl Amap (Gaode) building vector tiles inside the polygon.
-2. Write the footprints to an ESRI Shapefile.
-3. Detect whether the source coordinates are GCJ-02 encrypted (the
-   "Mars" offset Amap applies inside mainland China) and, if so,
-   reverse it to real WGS-84.
-4. Emit OSM data as `.osm`, an `.osc` changeset, or both.
+1. Computes the Microsoft GlobalML quadtree (z9) tiles covering it and
+   selects the matching rows from Microsoft's `dataset-links.csv`.
+2. Streams each gzipped GeoJSON-Lines footprint file and keeps the buildings
+   whose representative point falls inside the polygon.
+3. Confirms the source CRS is **EPSG:4326 (WGS-84)** — Microsoft footprints
+   carry no GCJ-02 "Mars" offset, so no decryption is needed.
+4. Writes an ESRI Shapefile and an OSM `.osm` file and/or `.osc` changeset.
+
+Data source: [microsoft/GlobalMLBuildingFootprints](https://github.com/microsoft/GlobalMLBuildingFootprints)
+(ODbL-compatible, already in WGS-84).
 
 ## Install
 
@@ -16,96 +20,47 @@
 pip install -r requirements.txt
 ```
 
-## API key
-
-All Amap data endpoints now require a developer key. Get one from
-<https://console.amap.com/dev/key/app> (free tier) and pass it via
-`--key` or the `AMAP_KEY` environment variable. In GitHub Actions, add
-it as a repository secret named `AMAP_KEY`.
-
 ## Use
 
 ```bash
-# AOI mode: boundary from a GeoJSON, official Amap REST API
-export AMAP_KEY=<your key>
-python amap2osm.py --boundary area.geojson --out out/ --zoom 16
+# boundary from a GeoJSON; produce buildings.shp, .osm and .osc
+python buildings2osm.py --boundary scope.geojson --out out/
 
 # raw polygon vertices (lon,lat, space separated; ring auto-closed)
-python amap2osm.py \
-  --vertices "116.39,39.90 116.41,39.90 116.41,39.92 116.39,39.92" \
+python buildings2osm.py \
+  --vertices "118.75,32.08 118.80,32.08 118.80,32.12 118.75,32.12" \
   --out out/ --osm-format osm
-
-# force-disable GCJ-02 decryption (e.g. data already in WGS-84)
-python amap2osm.py --boundary area.shp --decrypt no
-
-# legacy tile mode (no key, only if you have a working tile URL)
-python amap2osm.py --boundary area.geojson \
-  --tile-url 'https://example.tld/path?z={z}&x={x}&y={y}'
 ```
 
-### Notable flags
-
-| Flag            | Default      | Meaning                                    |
-|-----------------|--------------|--------------------------------------------|
-| `--zoom`        | `16`         | Tile zoom; 16 is where Amap serves footprints. |
-| `--tile-url`    | (built-in)   | URL template with `{z}/{x}/{y}` placeholders. |
-| `--decrypt`     | `auto`       | `auto` toggles on if the boundary's centroid lies in China. |
-| `--osm-format`  | `both`       | `osm`, `osc`, `both`, or `none`.            |
-| `--workers`     | `8`          | Concurrent tile fetchers.                   |
-
-## Coordinate handling
-
-The pipeline always treats your boundary as **WGS-84**. Inside China:
-
-1. The boundary is forward-projected to **GCJ-02** to select the right
-   Amap tiles in Mars-coord space.
-2. Building geometries returned by Amap are iteratively reverse-projected
-   back to WGS-84 (sub-millimetre round-trip with `gcj02_to_wgs84`).
-3. Buildings are clipped against the original WGS-84 boundary.
-
-Force the behaviour with `--decrypt yes|no`; `auto` (default) keys off
-whether the boundary's centroid lies in mainland China.
+| Flag           | Default                    | Meaning                              |
+|----------------|----------------------------|--------------------------------------|
+| `--boundary`   | —                          | GeoJSON or SHP boundary file.        |
+| `--vertices`   | —                          | Inline `lon,lat` polygon vertices.   |
+| `--out`        | `out`                      | Output directory.                    |
+| `--osm-format` | `both`                     | `osm`, `osc`, `both`, or `none`.     |
+| `--links-url`  | Microsoft dataset index    | Override the `dataset-links.csv` URL.|
 
 ## OSM tags
 
-`write_osm` emits OSM-conformant tags only:
+Footprints are tagged strictly per OSM conventions — nothing is invented:
 
-| Tag                | Source                             |
-|--------------------|-------------------------------------|
-| `building=yes`     | default                             |
-| `building=<type>`  | mapped from Amap `type` when it has a clean OSM equivalent (`residential`, `apartments`, `office`, `school`, …) |
-| `name`             | non-empty, whitespace-stripped      |
-| `height`           | bare numeric metres (e.g. `24.5`)   |
-| `building:levels`  | positive integer                    |
-| `source=AMap`      | always                              |
-| `ref:amap=<id>`    | when Amap returns a stable id       |
+| Tag             | Source                                            |
+|-----------------|---------------------------------------------------|
+| `building=yes`  | every footprint                                   |
+| `height`        | `properties.height` (metres) when Microsoft has it (> 0) |
 
-Empty, zero, or malformed values are dropped.
+OSM output uses negative placeholder node/way IDs so the file opens in JOSM
+and uploads as new objects.
 
-## Test fixtures + GitHub Actions
+## Test fixtures + CI
 
-`test_input/` contains a Nanjing test case: three adjacent 街道
-boundaries (`outer.geojson`) and the existing OSM buildings inside
-them (`inner.osm`). `prep_scope.py` unions the three districts
-(`unary_union` collapses their shared collinear edges) and subtracts
-the existing buildings to produce `scope.geojson`.
+`test_input/` holds a Nanjing test case: three adjacent 街道 boundaries
+(`outer.geojson`) and the existing OSM buildings inside them (`inner.osm`).
+`prep_scope.py` unions the three districts (collinear shared edges collapse
+via `unary_union`) and subtracts the existing buildings, producing
+`scope.geojson` — i.e. only the currently-unmapped area.
 
-Because Amap is not reachable from every environment, the actual crawl
-runs in GitHub Actions:
-
-```
-.github/workflows/amap-test.yml
-```
-
-Trigger via the *Actions* tab → *Amap building crawl test* → *Run
-workflow*. Tunables (`zoom`, `tile_url`, `workers`) are exposed as
-workflow inputs. The job uploads `buildings.osm`, `buildings.osc`,
-`buildings.shp`, and the merged `scope.geojson` as artifacts.
-
-## Notes
-
-* Amap's building endpoint is not officially published; the default URL
-  template targets the de-facto public endpoint. If Amap changes it,
-  override with `--tile-url`.
-* OSM output uses negative placeholder IDs so the file can be opened in
-  JOSM and uploaded as new objects.
+`.github/workflows/buildings-test.yml` runs the full pipeline against that
+scope and uploads `buildings.osm`, `buildings.osc`, `buildings.shp`, and the
+merged `scope.geojson` as artifacts. No API key or secret is required — the
+Microsoft dataset is public.

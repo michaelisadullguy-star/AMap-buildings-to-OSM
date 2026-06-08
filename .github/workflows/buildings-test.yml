@@ -1,26 +1,16 @@
-name: Amap building crawl test
+name: Microsoft buildings → OSM test
 
 on:
   workflow_dispatch:
-    inputs:
-      zoom:
-        description: "Mercator zoom for query tiles (default 16)"
-        default: "16"
-      types:
-        description: "Amap POI typecodes (| separated)"
-        default: "120000|120100|120200|120300|120400|130000|140000|150000|170000"
-      workers:
-        description: "Concurrent fetchers"
-        default: "8"
   push:
     paths:
-      - "amap2osm.py"
+      - "buildings2osm.py"
       - "prep_scope.py"
-      - ".github/workflows/amap-test.yml"
+      - ".github/workflows/buildings-test.yml"
       - "test_input/**"
 
 jobs:
-  crawl:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -47,27 +37,15 @@ jobs:
             test_input/inner.osm \
             test_input/scope.geojson
 
-      - name: Crawl Amap and export OSM
-        env:
-          AMAP_KEY: ${{ secrets.AMAP_KEY }}
-          ZOOM:    ${{ github.event.inputs.zoom    || '16' }}
-          TYPES:   ${{ github.event.inputs.types   || '120000|120100|120200|120300|120400|130000|140000|150000|170000' }}
-          WORKERS: ${{ github.event.inputs.workers || '8' }}
+      - name: Extract Microsoft footprints and export OSM
         run: |
-          if [ -z "$AMAP_KEY" ]; then
-            echo "::error::AMAP_KEY secret is not set. Add it under Settings → Secrets → Actions."
-            exit 1
-          fi
-          python amap2osm.py \
+          python buildings2osm.py \
             --boundary test_input/scope.geojson \
             --out out/ \
-            --zoom "$ZOOM" \
-            --types "$TYPES" \
-            --workers "$WORKERS" \
             --osm-format both \
             --verbose
 
-      - name: Show output summary
+      - name: Output summary
         if: always()
         run: |
           ls -la out/ || true
@@ -80,7 +58,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: amap-buildings
+          name: buildings
           path: |
             test_input/scope.geojson
             out/
