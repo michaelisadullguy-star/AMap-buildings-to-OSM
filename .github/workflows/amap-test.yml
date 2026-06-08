@@ -40,23 +40,35 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Probe Amap endpoint candidates
+      - name: Probe Amap vdata endpoints
         if: always()
         run: |
           set +e
-          for u in \
-            "https://ditu.amap.com/dataservice/buildings?z=16&x=54387&y=26590" \
-            "https://m5.amap.com/ws/mapapi/maps/styles/9000/16/54387/26590.pbf" \
-            "https://wprd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x=54387&y=26590&z=16" \
-            "https://vdata.amap.com/tile?x=54387&y=26590&z=16&t=3" \
-            "https://www.amap.com/service/buildingInfo?z=16&x=54387&y=26590" \
-            "https://www.amap.com/detail/get/buildings?z=16&x=54387&y=26590"
-          do
+          # Try vdata.amap.com with a long timeout across t parameters and shards.
+          base_targets=(
+            "https://vdata.amap.com/tile?x=54387&y=26590&z=16"
+            "https://vdata.amap.com/dwr/?x=54387&y=26590&z=16"
+            "https://vdata01.amap.com/tile?x=54387&y=26590&z=16"
+            "https://vdata.amap.com/datatile?x=54387&y=26590&z=16"
+            "https://restapi.amap.com/v3/place/around?location=118.78,32.11&types=120000"
+          )
+          for u in "${base_targets[@]}"; do
             echo "=== $u"
-            curl -sSI --max-time 10 -A "Mozilla/5.0" -H "Referer: https://ditu.amap.com/" "$u" | head -5
-            echo "--- body (first 300 bytes):"
-            curl -sS --max-time 10 -A "Mozilla/5.0" -H "Referer: https://ditu.amap.com/" "$u" | head -c 300 | xxd | head -20
+            timeout 30 curl -sS --max-time 30 -A "Mozilla/5.0" \
+              -H "Referer: https://www.amap.com/" "$u" -o /tmp/r.bin -w "STATUS %{http_code} CT=%{content_type} SIZE=%{size_download}\n"
+            echo "--- body (first 200 chars):"
+            head -c 200 /tmp/r.bin | tr -d '\0' | sed 's/[^[:print:]]/./g'
             echo
+          done
+
+          echo "==== sweep t parameter at vdata.amap.com ===="
+          for t in 0 1 2 3 4 5 6 7 8; do
+            echo "--- t=$t"
+            timeout 30 curl -sS --max-time 30 -A "Mozilla/5.0" \
+              -H "Referer: https://www.amap.com/" \
+              "https://vdata.amap.com/tile?x=54387&y=26590&z=16&t=$t" \
+              -o /tmp/r.bin -w "STATUS %{http_code} CT=%{content_type} SIZE=%{size_download}\n"
+            head -c 200 /tmp/r.bin | tr -d '\0' | sed 's/[^[:print:]]/./g'; echo
           done
 
       - name: Build merged test scope (outer ∖ inner)
