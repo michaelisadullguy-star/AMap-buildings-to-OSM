@@ -3,4 +3,3 @@ shapely>=2.0
 pyproj>=3.4
 mercantile>=1.2
 fiona>=1.9
-click>=8.1

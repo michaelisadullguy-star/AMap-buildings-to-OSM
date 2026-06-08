@@ -1,0 +1,82 @@
+name: Amap building crawl test
+
+on:
+  workflow_dispatch:
+    inputs:
+      zoom:
+        description: "Tile zoom (16 is typical for buildings)"
+        default: "16"
+      tile_url:
+        description: "Override Amap tile URL template ({z}/{x}/{y})"
+        default: "https://ditu.amap.com/dataservice/buildings?z={z}&x={x}&y={y}"
+      workers:
+        description: "Concurrent tile fetchers"
+        default: "8"
+  push:
+    paths:
+      - "amap2osm.py"
+      - "prep_scope.py"
+      - ".github/workflows/amap-test.yml"
+      - "test_input/**"
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system GDAL (needed by fiona)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdal-bin libgdal-dev
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build merged test scope (outer ∖ inner)
+        run: |
+          python prep_scope.py \
+            test_input/outer.geojson \
+            test_input/inner.osm \
+            test_input/scope.geojson
+
+      - name: Crawl Amap and export OSM
+        env:
+          ZOOM:     ${{ github.event.inputs.zoom || '16' }}
+          TILE_URL: ${{ github.event.inputs.tile_url || 'https://ditu.amap.com/dataservice/buildings?z={z}&x={x}&y={y}' }}
+          WORKERS:  ${{ github.event.inputs.workers || '8' }}
+        run: |
+          python amap2osm.py \
+            --boundary test_input/scope.geojson \
+            --out out/ \
+            --zoom "$ZOOM" \
+            --tile-url "$TILE_URL" \
+            --workers "$WORKERS" \
+            --osm-format both \
+            --verbose
+
+      - name: Show output summary
+        if: always()
+        run: |
+          ls -la out/ || true
+          if [ -f out/buildings.osm ]; then
+            echo "Way count: $(grep -c '<way ' out/buildings.osm)"
+            echo "Node count: $(grep -c '<node ' out/buildings.osm)"
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amap-buildings
+          path: |
+            test_input/scope.geojson
+            out/
+          if-no-files-found: warn
