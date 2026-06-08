@@ -73,18 +73,61 @@ def hexdump(b: bytes, n: int = 48) -> str:
 
 
 # ---------------------------------------------------------------------------
+HOST_PAT = re.compile(r"(?:https?:)?//[\w.\-]*(?:amap|autonavi|gaode)[\w.\-]*"
+                      r"(?:/[\w./\-]*)?", re.I)
+KEYWORD_PAT = re.compile(r"tile|vdata|vmap|building|楼块|mesh|gltf|frontend|"
+                         r"datatile|webgl|sceneTile|abroad|basemap", re.I)
+
+
+def _scan_js(session: requests.Session, urls: list[str], found: set[str],
+             depth: int = 0) -> None:
+    """Fetch JS bundles, harvest amap endpoint patterns, recurse one level
+    into referenced .js modules."""
+    for u in urls[:16]:
+        try:
+            j = session.get(u, timeout=25, headers=H)
+        except requests.RequestException:
+            continue
+        if j.status_code != 200:
+            continue
+        text = j.text
+        for m in HOST_PAT.findall(text):
+            if KEYWORD_PAT.search(m):
+                found.add(m)
+        if depth == 0:
+            # follow referenced sub-bundles once (JSAPI loader -> modules)
+            refs = []
+            for s in re.findall(r'["\'](https?:[^"\']+\.js[^"\']*)["\']', text):
+                if "amap" in s or "autonavi" in s:
+                    refs.append(s)
+            if refs:
+                _scan_js(session, list(dict.fromkeys(refs)), found, depth + 1)
+
+
 def discover(session: requests.Session) -> None:
     print("=" * 70)
-    print("PHASE 1 — DISCOVERY (scrape amap.com JS for live tile endpoints)")
+    print("PHASE 1 — DISCOVERY (scrape live tile endpoints)")
     print("=" * 70)
-    host_pat = re.compile(r"(?:https?:)?//[\w.\-]*(?:amap|autonavi|gaode)[\w.\-]*"
-                          r"(?:/[\w./\-]*)?", re.I)
-    keyword_pat = re.compile(r"tile|vdata|vmap|building|楼块|mesh|gltf|frontend|"
-                             r"datatile|webgl", re.I)
-    js_urls: list[str] = []
+    found: set[str] = set()
+
+    # 1) The keyed JSAPI loader bundles carry the real runtime data endpoints.
+    if KEY:
+        loaders = [
+            f"https://webapi.amap.com/maps?v=2.0&key={KEY}",
+            f"https://webapi.amap.com/maps?v=1.4.15&key={KEY}",
+            f"https://webapi.amap.com/loca?v=2.0.0&key={KEY}",
+        ]
+        print(f"scanning {len(loaders)} keyed JSAPI loaders + their modules...")
+        _scan_js(session, loaders, found)
+    else:
+        print("(no key -> skipping keyed JSAPI discovery; this is where the "
+              "real endpoint normally surfaces)")
+
+    # 2) Best-effort static scrape of the SPA homepage.
     try:
         r = session.get("https://www.amap.com/", timeout=25, headers=H)
         print(f"homepage: {r.status_code}, {len(r.content)} bytes")
+        srcs = []
         for s in re.findall(r'src=["\']([^"\']+\.js[^"\']*)["\']', r.text):
             if s.startswith("//"):
                 s = "https:" + s
@@ -92,32 +135,15 @@ def discover(session: requests.Session) -> None:
                 s = "https://www.amap.com" + s
             elif not s.startswith("http"):
                 continue
-            js_urls.append(s)
-        # also harvest endpoints directly from the HTML
-        for m in set(host_pat.findall(r.text)):
-            if keyword_pat.search(m):
-                print("  html-hit:", m[:140])
+            srcs.append(s)
+        _scan_js(session, list(dict.fromkeys(srcs)), found)
     except requests.RequestException as e:
         print("homepage fetch failed:", e)
 
-    js_urls = list(dict.fromkeys(js_urls))[:14]
-    print(f"\nscanning {len(js_urls)} JS bundles for endpoint patterns...")
-    found: set[str] = set()
-    for u in js_urls:
-        try:
-            j = session.get(u, timeout=25, headers=H)
-            if j.status_code != 200:
-                continue
-            text = j.text
-            for m in host_pat.findall(text):
-                if keyword_pat.search(m) and m not in found:
-                    found.add(m)
-        except requests.RequestException:
-            continue
     for m in sorted(found):
         print("  endpoint-hit:", m[:160])
     if not found:
-        print("  (no tile/building endpoint patterns found in scanned JS)")
+        print("  (no tile/building endpoint patterns found)")
 
 
 # ---------------------------------------------------------------------------
