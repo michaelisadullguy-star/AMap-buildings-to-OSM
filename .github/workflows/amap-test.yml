@@ -40,6 +40,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Probe Amap endpoint candidates
+        if: always()
+        run: |
+          set +e
+          for u in \
+            "https://ditu.amap.com/dataservice/buildings?z=16&x=54387&y=26590" \
+            "https://m5.amap.com/ws/mapapi/maps/styles/9000/16/54387/26590.pbf" \
+            "https://wprd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x=54387&y=26590&z=16" \
+            "https://vdata.amap.com/tile?x=54387&y=26590&z=16&t=3" \
+            "https://www.amap.com/service/buildingInfo?z=16&x=54387&y=26590" \
+            "https://www.amap.com/detail/get/buildings?z=16&x=54387&y=26590"
+          do
+            echo "=== $u"
+            curl -sSI --max-time 10 -A "Mozilla/5.0" -H "Referer: https://ditu.amap.com/" "$u" | head -5
+            echo "--- body (first 300 bytes):"
+            curl -sS --max-time 10 -A "Mozilla/5.0" -H "Referer: https://ditu.amap.com/" "$u" | head -c 300 | xxd | head -20
+            echo
+          done
+
       - name: Build merged test scope (outer ∖ inner)
         run: |
           python prep_scope.py \
