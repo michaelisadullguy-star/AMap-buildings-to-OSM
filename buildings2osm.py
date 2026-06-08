@@ -83,24 +83,61 @@ def covering_quadkeys(boundary, zoom: int = QUADKEY_ZOOM) -> set[str]:
             for t in mercantile.tiles(minx, miny, maxx, maxy, zooms=[zoom])}
 
 
+def _col(fieldnames, *names):
+    """Resolve a column name case-insensitively."""
+    low = {f.lower(): f for f in (fieldnames or [])}
+    for n in names:
+        if n.lower() in low:
+            return low[n.lower()]
+    return None
+
+
 def select_links(session: requests.Session, quadkeys: set[str],
                  links_url: str) -> list[tuple[str, str]]:
     """Stream dataset-links.csv and return (location, url) for matching tiles."""
     logging.info("fetching dataset index: %s", links_url)
     out: list[tuple[str, str]] = []
     seen_urls: set[str] = set()
+    # bbox-prefix of our quadkeys, for diagnostics if nothing matches
+    prefix = min(quadkeys, key=len)[:4] if quadkeys else ""
+    total = 0
+    samples: list[tuple[str, str]] = []
+    locations: set[str] = set()
+    qk_col = url_col = loc_col = None
+
     with session.get(links_url, stream=True, timeout=120,
                      headers={"User-Agent": UA}) as r:
         r.raise_for_status()
         lines = (ln.decode("utf-8", "replace") for ln in r.iter_lines())
         reader = csv.DictReader(lines)
+        qk_col = _col(reader.fieldnames, "QuadKey", "quadkey")
+        url_col = _col(reader.fieldnames, "Url", "url")
+        loc_col = _col(reader.fieldnames, "Location", "location", "region")
+        logging.info("dataset-links columns: %s (quadkey=%s url=%s loc=%s)",
+                     reader.fieldnames, qk_col, url_col, loc_col)
         for row in reader:
-            qk = (row.get("QuadKey") or "").strip()
-            if qk and qk in quadkeys and row.get("Url") not in seen_urls:
-                out.append((row.get("Location", "?"), row["Url"]))
-                seen_urls.add(row["Url"])
-    logging.info("matched %d footprint file(s) for quadkeys %s",
-                 len(out), sorted(quadkeys))
+            total += 1
+            qk = (row.get(qk_col) or "").strip() if qk_col else ""
+            loc = (row.get(loc_col) or "") if loc_col else ""
+            if loc:
+                locations.add(loc)
+            if qk and qk in quadkeys:
+                url = row.get(url_col) if url_col else None
+                if url and url not in seen_urls:
+                    out.append((loc or "?", url))
+                    seen_urls.add(url)
+            elif prefix and qk.startswith(prefix) and len(samples) < 8:
+                samples.append((loc, qk))
+
+    logging.info("matched %d footprint file(s) for quadkeys %s (scanned %d rows)",
+                 len(out), sorted(quadkeys), total)
+    if not out:
+        logging.warning("No exact quadkey match. Rows near prefix %r: %s",
+                        prefix, samples or "none")
+        china = sorted(l for l in locations if "chin" in l.lower())
+        logging.warning("Locations containing 'china': %s", china or "NONE")
+        logging.warning("total distinct locations: %d (e.g. %s)",
+                        len(locations), sorted(locations)[:12])
     return out
 
 
