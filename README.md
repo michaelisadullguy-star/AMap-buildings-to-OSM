@@ -16,10 +16,18 @@
 pip install -r requirements.txt
 ```
 
+## API key
+
+All Amap data endpoints now require a developer key. Get one from
+<https://console.amap.com/dev/key/app> (free tier) and pass it via
+`--key` or the `AMAP_KEY` environment variable. In GitHub Actions, add
+it as a repository secret named `AMAP_KEY`.
+
 ## Use
 
 ```bash
-# boundary from a GeoJSON; produce buildings.shp, .osm and .osc
+# AOI mode: boundary from a GeoJSON, official Amap REST API
+export AMAP_KEY=<your key>
 python amap2osm.py --boundary area.geojson --out out/ --zoom 16
 
 # raw polygon vertices (lon,lat, space separated; ring auto-closed)
@@ -29,6 +37,10 @@ python amap2osm.py \
 
 # force-disable GCJ-02 decryption (e.g. data already in WGS-84)
 python amap2osm.py --boundary area.shp --decrypt no
+
+# legacy tile mode (no key, only if you have a working tile URL)
+python amap2osm.py --boundary area.geojson \
+  --tile-url 'https://example.tld/path?z={z}&x={x}&y={y}'
 ```
 
 ### Notable flags

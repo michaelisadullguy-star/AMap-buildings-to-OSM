@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       zoom:
-        description: "Tile zoom (16 is typical for buildings)"
+        description: "Mercator zoom for query tiles (default 16)"
         default: "16"
-      tile_url:
-        description: "Override Amap tile URL template ({z}/{x}/{y})"
-        default: "https://ditu.amap.com/dataservice/buildings?z={z}&x={x}&y={y}"
+      types:
+        description: "Amap POI typecodes (| separated)"
+        default: "120000|120100|120200|120300|120400|130000|140000|150000|170000"
       workers:
-        description: "Concurrent tile fetchers"
+        description: "Concurrent fetchers"
         default: "8"
   push:
     paths:
@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install system GDAL (needed by fiona)
+      - name: Install system GDAL
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gdal-bin libgdal-dev
@@ -39,37 +39,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Probe Amap vdata endpoints
-        if: always()
-        run: |
-          set +e
-          # Try vdata.amap.com with a long timeout across t parameters and shards.
-          base_targets=(
-            "https://vdata.amap.com/tile?x=54387&y=26590&z=16"
-            "https://vdata.amap.com/dwr/?x=54387&y=26590&z=16"
-            "https://vdata01.amap.com/tile?x=54387&y=26590&z=16"
-            "https://vdata.amap.com/datatile?x=54387&y=26590&z=16"
-            "https://restapi.amap.com/v3/place/around?location=118.78,32.11&types=120000"
-          )
-          for u in "${base_targets[@]}"; do
-            echo "=== $u"
-            timeout 30 curl -sS --max-time 30 -A "Mozilla/5.0" \
-              -H "Referer: https://www.amap.com/" "$u" -o /tmp/r.bin -w "STATUS %{http_code} CT=%{content_type} SIZE=%{size_download}\n"
-            echo "--- body (first 200 chars):"
-            head -c 200 /tmp/r.bin | tr -d '\0' | sed 's/[^[:print:]]/./g'
-            echo
-          done
-
-          echo "==== sweep t parameter at vdata.amap.com ===="
-          for t in 0 1 2 3 4 5 6 7 8; do
-            echo "--- t=$t"
-            timeout 30 curl -sS --max-time 30 -A "Mozilla/5.0" \
-              -H "Referer: https://www.amap.com/" \
-              "https://vdata.amap.com/tile?x=54387&y=26590&z=16&t=$t" \
-              -o /tmp/r.bin -w "STATUS %{http_code} CT=%{content_type} SIZE=%{size_download}\n"
-            head -c 200 /tmp/r.bin | tr -d '\0' | sed 's/[^[:print:]]/./g'; echo
-          done
 
       - name: Build merged test scope (outer ∖ inner)
         run: |
@@ -80,15 +49,20 @@ jobs:
 
       - name: Crawl Amap and export OSM
         env:
-          ZOOM:     ${{ github.event.inputs.zoom || '16' }}
-          TILE_URL: ${{ github.event.inputs.tile_url || 'https://ditu.amap.com/dataservice/buildings?z={z}&x={x}&y={y}' }}
-          WORKERS:  ${{ github.event.inputs.workers || '8' }}
+          AMAP_KEY: ${{ secrets.AMAP_KEY }}
+          ZOOM:    ${{ github.event.inputs.zoom    || '16' }}
+          TYPES:   ${{ github.event.inputs.types   || '120000|120100|120200|120300|120400|130000|140000|150000|170000' }}
+          WORKERS: ${{ github.event.inputs.workers || '8' }}
         run: |
+          if [ -z "$AMAP_KEY" ]; then
+            echo "::error::AMAP_KEY secret is not set. Add it under Settings → Secrets → Actions."
+            exit 1
+          fi
           python amap2osm.py \
             --boundary test_input/scope.geojson \
             --out out/ \
             --zoom "$ZOOM" \
-            --tile-url "$TILE_URL" \
+            --types "$TYPES" \
             --workers "$WORKERS" \
             --osm-format both \
             --verbose
@@ -98,7 +72,7 @@ jobs:
         run: |
           ls -la out/ || true
           if [ -f out/buildings.osm ]; then
-            echo "Way count: $(grep -c '<way ' out/buildings.osm)"
+            echo "Way count:  $(grep -c '<way ' out/buildings.osm)"
             echo "Node count: $(grep -c '<node ' out/buildings.osm)"
           fi
 
